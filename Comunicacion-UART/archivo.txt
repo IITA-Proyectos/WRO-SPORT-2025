@@ -1,1 +1,3 @@
 hola
+El Archivo Comunicacion UART teensy es de un foro, es un dato de color para tener en cuenta los problemas y soluciones de la comunicacion, esta bueno leerlo 
+para tener referencias.
