@@ -86,7 +86,7 @@ void loop() {
   int pwmA = basePWM + correction;
   int pwmB = basePWM - correction;
 
-  pwmA = constrain(pwmA, 0, 60);
+  pwmA = constrain(pwmA, 0, 60);//este contrae los pwmA de 0 a 60 modificar de 0 a 80, 0 a 150
   pwmB = constrain(pwmB, 0, 60);
 
   // Motor C apagado
@@ -138,18 +138,7 @@ void loop() {
             byte codigo = buffer[0];
             byte x = buffer[1];
             byte y = buffer[2];
-           int correction = (int)pidYaw.Output;
-           sensors_event_t event;
-           bno.getEvent(&event);
-           float currentYaw = event.orientation.x;
-           pidYaw.Input = currentYaw;
-           pidYaw.Update();
-
-           pwmA = basePWM + correction;
-           pwmB = basePWM - correction;
-
-           pwmA = constrain(pwmA, 0, 60);
-           pwmB = constrain(pwmB, 0, 60);
+           
 
             switch (codigo)
             {
@@ -160,16 +149,11 @@ void loop() {
               break;
               
               case 0:
-            
-              ina1 = 1;
-              inb1 = 0;
+  
                controlMotor(INA1, INB1,ina1,inb1, PWM1, pwmA);
                controlMotor(INA2, INB2,inb1,ina1, PWM2, pwmB);
                delay(5);
-              if(correction > 90 && correction < 91){
-               controlMotor(INA1, INB1,inb1,ina1, PWM1, pwmA);
-               controlMotor(INA2, INB2,inb1,ina1, PWM2, pwmB);
-               delay(5);
+
               }
             } 
             
