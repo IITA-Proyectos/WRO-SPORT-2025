@@ -1,0 +1,100 @@
+#include <Arduino.h>
+
+#define START_BYTE 0xAA
+
+// UART1: asignamos pines RX y TX (ajusta según tu wiring)
+#define RXD1 9
+#define TXD1 8
+
+HardwareSerial OpenMV(1);  // UART1
+
+void setup() {
+  Serial.begin(115200);                    // Debug por USB
+  OpenMV.begin(19200, SERIAL_8N1, RXD1, TXD1); // UART para OpenMV
+  Serial.println("🚀 ESP32 listo para recibir datos de OpenMV");
+}
+
+void loop() {
+  static enum { WAIT_START, WAIT_LENGTH, WAIT_DATA } estado = WAIT_START;
+  static byte buffer[32];   // Aumenté el tamaño por seguridad
+  static byte length = 0;
+  static byte index = 0;
+
+  while (OpenMV.available()) {
+    byte b = OpenMV.read();
+
+    switch (estado) {
+      case WAIT_START:
+        if (b == START_BYTE) {
+          estado = WAIT_LENGTH;
+        }
+        break;
+
+      case WAIT_LENGTH:
+        length = b;
+        index = 0;
+        estado = WAIT_DATA;
+        break;
+
+      case WAIT_DATA:
+        buffer[index++] = b;
+        if (index >= length + 1) { // +1 para el checksum
+          // Verificar checksum
+          byte checksum = 0;
+          for (int i = 0; i < length; i++) checksum += buffer[i];
+          checksum %= 256;
+
+          if (checksum == buffer[length]) {
+            // Datos válidos
+            byte codigo = buffer[0];
+            byte x = buffer[1];
+            byte y = buffer[2];
+
+            Serial.print("✅ OK -> Código: ");
+            Serial.print(codigo);
+            Serial.print(", X: ");
+            Serial.print(x);
+            Serial.print(", Y: ");
+            Serial.println(y);
+          } else {
+            Serial.println("⚠️ Checksum incorrecto");
+          }
+          estado = WAIT_START; // Reiniciar estado
+        }
+        break;
+    }
+  }
+}
+................................................
+open:
+
+
+import time
+from pyb import UART
+
+START_BYTE = 0xAA
+
+uart = UART(3, 19200, timeout_char=200)
+
+while True:
+    codigo = 240
+    x = 10
+    y = 20
+
+    data = bytes([codigo, x, y])
+    length = len(data)
+
+    checksum = sum(data) % 256
+
+    packet = bytes([START_BYTE, length]) + data + bytes([checksum])
+
+    uart.write(packet)
+
+    print("Enviado:", [hex(b) for b in packet])
+
+    time.sleep_ms(1000)
+
+
+
+
+
