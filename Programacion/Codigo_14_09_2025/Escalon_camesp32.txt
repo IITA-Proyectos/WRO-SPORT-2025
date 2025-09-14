@@ -1,0 +1,375 @@
+#include <arduino.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+
+#define SWITCH_IZQUIERDO_PIN 24
+#define SWITCH_DERECHO_PIN   19
+#define SWITCH_TRASERO_PIN   23
+
+// -------------- Motores --------------
+#define INA1 12
+#define INB1 11
+#define PWM1 6
+
+#define INA2 10
+#define INB2 13
+#define PWM2 5
+
+#define INA3 17
+#define INB3 7
+#define PWM3 4
+
+#define START_BYTE 0xAA
+// -------------------------------------
+
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
+//bno.setMode(Adafruit_BNO055::OPERATION_MODE_IMUPLUS);
+
+float correccion = 0;
+float error = 0;
+float initialYaw = 0;   // heading inicial tal como lo da el BNO (0..360)
+float initialPitch = 0;
+float initialRoll = 0;
+int velocidad_adelante = 75; //antes era 70
+int velocidad_atras = 60; // antes era 80
+float kp = 2.0f; //antes era 10.0f
+const float DEADBAND = 1.5f;
+const int   MAX_CORR = 80;
+float currentYaw   = 0;
+float currentPitch = 0;
+float currentRoll = 0;
+unsigned long currentMillis = 0;
+unsigned long previousMillis = 0;
+int estado = 0;
+int estado1 = 0;
+
+// ---------- helpers de ángulo ----------
+static inline float wrap180(float a){
+  while (a <= -180.0f) a += 360.0f;
+  while (a >   180.0f) a -= 360.0f;
+  return a;
+}
+
+static inline int clampPWM(int v){
+  if (v < 0) return 0;
+  if (v > 255) return 255;
+  return v;
+}
+
+// ---------- movimientos ----------
+void pare() {
+  digitalWrite(INA3, LOW); digitalWrite(INB3, LOW); analogWrite(PWM3, 0);
+  digitalWrite(INA2, LOW); digitalWrite(INB2, LOW); analogWrite(PWM2, 0);
+  digitalWrite(INA1, LOW); digitalWrite(INB1, LOW); analogWrite(PWM1, 0);
+}
+
+void a() { // avanzar recto “rápido” sin corrección
+  digitalWrite(INA3, LOW); digitalWrite(INB3, HIGH); analogWrite(PWM3, 200);
+  digitalWrite(INA2, HIGH); digitalWrite(INB2, LOW);  analogWrite(PWM2, 200);
+  digitalWrite(INA1, LOW);  digitalWrite(INB1, LOW);  analogWrite(PWM1, 0);
+}
+
+void aproporcional() { // avanza corrigiendo
+  int pwmL = clampPWM(velocidad_adelante - (int)correccion);
+  int pwmR = clampPWM(velocidad_adelante + (int)correccion);
+
+  // motor izquierdo (M3) en reversa
+  digitalWrite(INA3, LOW); digitalWrite(INB3, HIGH); analogWrite(PWM3, pwmL);
+  // motor derecho (M2) adelante
+  digitalWrite(INA2, HIGH); digitalWrite(INB2, LOW);  analogWrite(PWM2, pwmR);
+
+  // rueda trasera ayuda según signo
+  //if (fabs(error) <= DEADBAND){
+    digitalWrite(INA1, LOW); digitalWrite(INB1, LOW); analogWrite(PWM1, 0);
+  /*} else if (error > 0){
+    // inclinación positiva → empuja “atrás adelante”
+    digitalWrite(INA1, LOW); 
+    digitalWrite(INB1, HIGH); 
+    analogWrite(PWM1, clampPWM((int)fabs(correccion)));
+  } else { // error < 0
+    digitalWrite(INA1, HIGH); digitalWrite(INB1, LOW); analogWrite(PWM1, clampPWM((int)fabs(correccion)));
+  }*/
+}
+
+void ai() { // izquierda
+  digitalWrite(INA3, HIGH); digitalWrite(INB3, LOW);  analogWrite(PWM3, 40);
+  digitalWrite(INA2, HIGH); digitalWrite(INB2, LOW);  analogWrite(PWM2, 40);
+  digitalWrite(INA1, LOW);  digitalWrite(INB1, HIGH); analogWrite(PWM1, 80);
+}
+
+void ad() { // derecha
+  digitalWrite(INA3, LOW);  digitalWrite(INB3, HIGH); analogWrite(PWM3, 40);
+  digitalWrite(INA2, LOW);  digitalWrite(INB2, HIGH); analogWrite(PWM2, 40);
+  digitalWrite(INA1, HIGH); digitalWrite(INB1, LOW);  analogWrite(PWM1, 80);
+}
+
+void rproporcional() { // retroceder corrigiendo
+  int pwmL = clampPWM(velocidad_atras + (int)correccion);
+  int pwmR = clampPWM(velocidad_atras - (int)correccion);
+
+  // motor izquierdo (M3) adelante
+  digitalWrite(INA3, HIGH); digitalWrite(INB3, LOW);  analogWrite(PWM3, pwmL);
+  // motor derecho (M2) atrás
+  digitalWrite(INA2, LOW);  digitalWrite(INB2, HIGH); analogWrite(PWM2, pwmR);
+
+  // rueda atrás apoya corrección
+  //if (fabs(error) <= DEADBAND){
+    digitalWrite(INA1, LOW); digitalWrite(INB1, HIGH); analogWrite(PWM1, 0);
+  /*} else if (error > 0){
+    digitalWrite(INA1, LOW);  digitalWrite(INB1, HIGH); analogWrite(PWM1, clampPWM((int)fabs(correccion)));
+  } else {
+    digitalWrite(INA1, HIGH); digitalWrite(INB1, LOW);  analogWrite(PWM1, clampPWM((int)fabs(correccion)));
+  }*/
+}
+
+void r() { // retro recto sin corrección (se usa poco)
+  digitalWrite(INA3, HIGH); digitalWrite(INB3, LOW);  analogWrite(PWM3, 150);
+  digitalWrite(INA2, LOW);  digitalWrite(INB2, HIGH); analogWrite(PWM2, 150);
+  digitalWrite(INA1, LOW);  digitalWrite(INB1, LOW);  analogWrite(PWM1, 0);
+}
+
+void gd (){ // giro derecha
+  digitalWrite(INA1, HIGH); digitalWrite(INB1, LOW); analogWrite(PWM1, 45);
+  digitalWrite(INA2, HIGH); digitalWrite(INB2, LOW); analogWrite(PWM2, 0);
+  digitalWrite(INA3, HIGH); digitalWrite(INB3, LOW); analogWrite(PWM3, 0);
+}
+void gi (){ // giro izquierda
+  digitalWrite(INA1, LOW);  digitalWrite(INB1, HIGH); analogWrite(PWM1, 45);
+  digitalWrite(INA2, LOW);  digitalWrite(INB2, HIGH); analogWrite(PWM2, 0);
+  digitalWrite(INA3, LOW);  digitalWrite(INB3, HIGH); analogWrite(PWM3, 0);
+}
+
+// -------------------------------------
+
+void setup() {
+  Serial.begin(115200);
+  Serial1.begin(19200,SERIAL_8N1, 9, 8); 
+
+  pinMode(INA1, OUTPUT); pinMode(INB1, OUTPUT); pinMode(PWM1, OUTPUT);
+  pinMode(INA2, OUTPUT); pinMode(INB2, OUTPUT); pinMode(PWM2, OUTPUT);
+  pinMode(INA3, OUTPUT); pinMode(INB3, OUTPUT); pinMode(PWM3, OUTPUT);
+
+  pinMode(SWITCH_IZQUIERDO_PIN, INPUT_PULLUP);
+  pinMode(SWITCH_DERECHO_PIN,   INPUT_PULLUP);
+  pinMode(SWITCH_TRASERO_PIN,   INPUT_PULLUP);
+
+  delay(3000);
+
+  if (!bno.begin()) {
+    Serial.println("¡No se pudo encontrar el BNO055!");
+    while (1);
+  }
+  bno.setExtCrystalUse(true);
+
+  sensors_event_t event;
+  bno.getEvent(&event);
+  initialYaw   = event.orientation.x; // 0..360
+  initialPitch = event.orientation.z;
+  initialRoll  = event.orientation.y;
+
+  previousMillis = millis();
+
+  Serial.println("Orientación inicial:");
+  Serial.print("Yaw: ");   Serial.println(initialYaw);
+  Serial.print("Pitch: "); Serial.println(initialPitch);
+  Serial.print("Roll: ");  Serial.println(initialRoll);
+  Serial.println("--------------------------");
+
+  currentMillis = millis();
+  previousMillis = currentMillis;
+}
+
+void loop() {
+   sensors_event_t event;
+  bno.getEvent(&event);
+
+  currentYaw   = event.orientation.x; // 0..360
+  currentPitch = event.orientation.z;
+  currentRoll  = event.orientation.y;
+
+  // Llevo ambos (target y medición) a -180..+180 y calculo error como arco corto
+  float currentYaw180  = wrap180(currentYaw);
+  float initialYaw180  = wrap180(initialYaw);
+  error = wrap180(currentYaw180 - initialYaw180);
+
+  // zona muerta y saturación de corrección
+  float eForCtrl = (fabs(error) < DEADBAND) ? 0.0f : error;
+  correccion = eForCtrl * kp;
+  if (correccion >  MAX_CORR) correccion =  MAX_CORR;
+  if (correccion < -MAX_CORR) correccion = -MAX_CORR;
+
+ currentMillis = millis();
+
+  bool switchDerechoActivado  = (digitalRead(SWITCH_DERECHO_PIN)  == LOW); // LOW = presionado
+  bool switchTraseroActivado  = (digitalRead(SWITCH_TRASERO_PIN)  == HIGH); //para robot blanco HIGH
+  bool switchIzquierdoActivado = (digitalRead(SWITCH_IZQUIERDO_PIN)== LOW);
+
+  switch (estado1) {
+    case 0: // izquierda hasta tocar switch izquierdo
+      ai();
+      if (switchIzquierdoActivado || (currentMillis - previousMillis) >= 1500) {
+        pare();
+        estado1 = 1;
+        previousMillis = currentMillis;
+      }
+      break;
+
+    case 1: // avanza por tiempo con corrección
+      aproporcional();
+      if (currentMillis - previousMillis >= 1350) {//depende la bateria va a cambiar la velocidad y el tiempo
+        previousMillis = currentMillis;
+        estado1 = 2;
+      }
+      break;
+
+    case 2: // derecha por tiempo
+      ad();
+      if (currentMillis - previousMillis >= 800) {
+        pare();
+        estado1 = 3;
+        previousMillis = currentMillis;
+      }
+      break;
+
+    case 3: // retrocede hasta tocar switch trasero, corrigiendo
+
+      if(error < -15){
+           digitalWrite(INA3, LOW); digitalWrite(INB3, HIGH);  analogWrite(PWM3, 70);
+           digitalWrite(INA2, LOW);  digitalWrite(INB2, HIGH); analogWrite(PWM2, 0);
+           digitalWrite(INA1, LOW); digitalWrite(INB1, HIGH); analogWrite(PWM1, 70);
+      }
+
+      else{
+        rproporcional();
+      }
+
+      if (switchTraseroActivado || (currentMillis - previousMillis) >= 3000) {           // <-- antes comparabas == 0
+        pare();                               // paro para evitar “curva” al salir
+        previousMillis = currentMillis;
+        estado1 = 8;
+      }
+      break;
+
+    case 8: // izquierda por tiempo (corto)
+      ai();
+      if (currentMillis - previousMillis >= 300) {
+        pare();
+        estado1 = 9;
+        previousMillis = currentMillis;
+      }
+      break;
+
+    case 9: // avanza por el medio (igual que case 1, otro tiempo)
+      aproporcional();
+      if (currentMillis - previousMillis >= 1350) {
+        previousMillis = currentMillis;
+        estado1 = 11;
+      }
+      break;
+
+    case 11: // derecha por tiempo
+      ad();
+      if (currentMillis - previousMillis >= 600) {
+        pare();
+        estado1 = 12;
+        previousMillis = currentMillis;
+      }
+      break;
+
+    case 12: // retrocede hasta switch trasero
+    
+       if(error < -15){
+          digitalWrite(INA3, LOW); digitalWrite(INB3, HIGH);  analogWrite(PWM3, 70);
+          digitalWrite(INA2, LOW);  digitalWrite(INB2, HIGH); analogWrite(PWM2, 0);
+          digitalWrite(INA1, LOW); digitalWrite(INB1, HIGH); analogWrite(PWM1, 70);
+      }
+      
+      else{
+        rproporcional();
+      }
+
+      if (switchTraseroActivado || (currentMillis - previousMillis) >= 3000) {
+        pare();
+        previousMillis = currentMillis;
+        estado1 = 0;
+      }
+      break;
+
+    case 13:
+      // (tu rutina de esquina acá si la necesitás)
+      break;
+  }
+  /*static enum { WAIT_START, WAIT_LENGTH, WAIT_DATA } estado = WAIT_START;
+  static byte buffer[10];
+  static byte length = 0;
+  static byte index = 0;
+   
+   
+  while (Serial1.available()) {
+    byte b = Serial1.read();
+    //Serial.println("Iniv");
+    //Serial.print("Iniv");
+    switch (estado) {
+      case WAIT_START:
+        if (b == START_BYTE) {
+          estado = WAIT_LENGTH;
+        }
+        break;
+
+      case WAIT_LENGTH:
+        length = b;
+        index = 0;
+        estado = WAIT_DATA;
+        break;
+
+      case WAIT_DATA:
+        buffer[index++] = b;
+        if (index >= length + 1) { // +1 para el checksum
+          // Verificar checksum
+          byte checksum = 0;
+          for (int i = 0; i < length; i++) checksum += buffer[i];
+          checksum %= 256;
+
+          if (checksum == buffer[length]) {
+            // Datos válidos
+            byte codigo = buffer[0];//le llega el color
+            byte x = buffer[1];
+            byte y = buffer[2];
+
+            Serial.print("OK -> Código: ");
+            Serial.print(codigo);
+            Serial.print(", X: ");
+            Serial.print(x);
+            Serial.print(", Y: ");
+            Serial.println(y);*/
+///------------------------------------------------------------------
+
+  
+  /*switch(codigo){
+    case 0:
+      
+    break;
+
+    case 1:
+      aproporcional();
+    break;
+
+    case 2:
+     pare();
+    break;
+  }*/
+          
+    
+//--------------------------------------------------------------------            
+           /*else {
+            Serial.println(" Checksum incorrecto");
+
+          }
+          estado = WAIT_START; // Reiniciar estado
+        }
+        break;
+    }*/
+  
+  
+}
