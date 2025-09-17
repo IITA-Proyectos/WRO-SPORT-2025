@@ -1,1 +1,4 @@
 En el codigo main, solo se detecta las pelotas y manda el paquete de bytes.
+En el codigo main-Camara-cambios-de-estados.py se implementa un control de estado, ahora comparo si hay diferencias entre los blobs 
+de naranja y violeta. Tambien se detectan ambos colores l mismo tiempo, y si tengo solo naranja mando 1, si tengo naranja  con morada
+envio 2, si tengo morada sola mando un 2.
