@@ -461,29 +461,46 @@ void loop() {
       
     break;
 
-    case 3:
-    error = wrap180(currentYaw180 - initialYaw180-5);
+case 3: {
+  // Calcular error de orientación
+  float currentYaw180 = wrap180(currentYaw);
+  float targetYaw180  = wrap180(initialYaw);  // el -5 ya estaba en tu código
+  error = wrap180(currentYaw180 - targetYaw180);
 
-  // zona muerta y saturación de corrección
-   //eForCtrl = (fabs(error) < DEADBAND) ? 0.0f : error;
-  correccion = eForCtrl * kpatras;
-  if (correccion >  MAX_CORR) correccion =  MAX_CORR;
+  // Zona muerta
+  float eForCtrl = (fabs(error) < DEADBAND) ? 0.0f : error;
+
+  // PID
+  integral += eForCtrl * dt;
+  float derivada = (eForCtrl - error_anterior) / dt;
+  correccion = kp_atras * eForCtrl + ki_atras * integral + kd_atras * derivada;
+  error_anterior = eForCtrl;
+
+  // Saturación
+  if (correccion > MAX_CORR) correccion = MAX_CORR;
   if (correccion < -MAX_CORR) correccion = -MAX_CORR;
-    if(error > 15){
-           digitalWrite(INA3, LOW); digitalWrite(INB3, HIGH);  analogWrite(PWM3, 0);
-           digitalWrite(INA2, HIGH);  digitalWrite(INB2, LOW); analogWrite(PWM2, 80);
-           digitalWrite(INA1, HIGH); digitalWrite(INB1, LOW); analogWrite(PWM1, 80);
-      }
 
-      else{
-        rproporcional(correccion);
-      }           
-      if (switchTraseroActivado || (currentMillis - previousMillis) >= 2000) {
-        pare();
-         estado1 = 8; 
-         previousMillis = currentMillis;
-       }
-      break; 
+  // Movimiento con corrección
+  if (error > 15) {
+    // giro correctivo rápido
+    digitalWrite(INA3, LOW);  digitalWrite(INB3, HIGH); analogWrite(PWM3, 0);
+    digitalWrite(INA2, HIGH); digitalWrite(INB2, LOW);  analogWrite(PWM2, 80);
+    digitalWrite(INA1, HIGH); digitalWrite(INB1, LOW);  analogWrite(PWM1, 80);
+  } else {
+    rproporcional(correccion);
+  }
+
+  // Condiciones de fin
+  if (switchTraseroActivado || (currentMillis - previousMillis) >= 2000) {
+    pare();
+    integral = 0; // limpiar el acumulador al salir
+    estado1 = 8;
+    previousMillis = currentMillis;
+  }
+  break;
+}
+
+
     case 8:
       adproporcional();
       if(currentMillis - previousMillis >= 250){
