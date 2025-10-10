@@ -1,0 +1,190 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+
+//#define SWITCH_IZQUIERDO_PIN 29
+#define SWITCH_DERECHO_PIN 24
+#define SWITCH_TRASERO_PIN 23
+
+// ================== Motores ==================
+#define INA1 12
+#define INB1 11
+#define PWM1 6
+#define INA2 10
+#define INB2 13
+#define PWM2 5
+#define INA3 17
+#define INB3 7
+#define PWM3 4
+#define START_BYTE 0xAA
+// =============================================
+
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
+
+// ================== CONTROL DE TIEMPO ==================
+const unsigned long DT_MS = 10;  // Paso fijo en milisegundos → 100 Hz
+const float dt = DT_MS / 1000.0f;
+unsigned long lastUpdate = 0;
+
+// ================== PID VARIABLES ==================
+float correccion = 0;
+float error = 0;
+float errorAnterior = 0;
+float integral = 0;
+
+float currentYaw = 0;
+float initialYaw = 0;
+
+const float DEADBAND = 1.5f;
+const int MAX_CORR = 80;
+
+// ================== CONSTANTES PID POR SEGMENTO ==================
+float kpc0 = 10, kdc0 = 5,  kic0 = 0;
+float kpc1 = 10, kdc1 = 5,  kic1 = 0;
+float kpc2 = 10, kdc2 = 5,  kic2 = 0;
+float kpc3 = 5,  kdc3 = 10, kic3 = 0;
+float kpc8 = 10, kdc8 = 5,  kic8 = 0;
+float kpc9 = 10, kdc9 = 5,  kic9 = 0;
+float kpc11 = 10, kdc11 = 5, kic11 = 0;
+float kpc12 = 10, kdc12 = 5, kic12 = 0;
+float kpc13 = 10, kdc13 = 5, kic13 = 0;
+
+// ================== VELOCIDADES BASE ==================
+int velocidad_adelante = 76;
+int velocidad_atras = 70;
+int velocidad_izquierda = 40;
+int velocidad_derecha = 40;
+
+int estado1 = 0;
+unsigned long currentMillis = 0;
+unsigned long previousMillis = 0;
+
+// ================== FUNCIONES AUXILIARES ==================
+static inline float wrap180(float a) {
+  while (a <= -180.0f) a += 360.0f;
+  while (a > 180.0f) a -= 360.0f;
+  return a;
+}
+
+static inline int clampPWM(int v) {
+  if (v < 0) return 0;
+  if (v > 255) return 255;
+  return v;
+}
+
+void pare() {
+  digitalWrite(INA3, LOW); digitalWrite(INB3, LOW); analogWrite(PWM3, 0);
+  digitalWrite(INA2, LOW); digitalWrite(INB2, LOW); analogWrite(PWM2, 0);
+  digitalWrite(INA1, LOW); digitalWrite(INB1, LOW); analogWrite(PWM1, 0);
+}
+
+// ---------- Movimientos ----------
+void aproporcional(float correccion) {
+  int pwmL = clampPWM(velocidad_adelante - (int)correccion);
+  int pwmR = clampPWM(velocidad_adelante + (int)correccion);
+
+  digitalWrite(INA3, LOW); digitalWrite(INB3, HIGH); analogWrite(PWM3, pwmL);
+  digitalWrite(INA2, HIGH); digitalWrite(INB2, LOW);  analogWrite(PWM2, pwmR);
+  digitalWrite(INA1, LOW);  digitalWrite(INB1, LOW);  analogWrite(PWM1, 0);
+}
+
+void rproporcional(float correccion) {
+  int pwmL = clampPWM(velocidad_atras + (int)correccion);
+  int pwmR = clampPWM(velocidad_atras - (int)correccion);
+
+  digitalWrite(INA3, HIGH); digitalWrite(INB3, LOW);  analogWrite(PWM3, pwmL);
+  digitalWrite(INA2, LOW);  digitalWrite(INB2, HIGH); analogWrite(PWM2, pwmR);
+  digitalWrite(INA1, LOW);  digitalWrite(INB1, HIGH); analogWrite(PWM1, 0);
+}
+
+// =======================================================
+void setup() {
+  Serial.begin(115200);
+  pinMode(INA1, OUTPUT); pinMode(INB1, OUTPUT); pinMode(PWM1, OUTPUT);
+  pinMode(INA2, OUTPUT); pinMode(INB2, OUTPUT); pinMode(PWM2, OUTPUT);
+  pinMode(INA3, OUTPUT); pinMode(INB3, OUTPUT); pinMode(PWM3, OUTPUT);
+
+  pinMode(SWITCH_DERECHO_PIN, INPUT_PULLUP);
+  pinMode(SWITCH_TRASERO_PIN, INPUT_PULLUP);
+
+  if (!bno.begin()) {
+    Serial.println("Error: BNO055 no detectado");
+    while (1);
+  }
+  bno.setExtCrystalUse(true);
+
+  sensors_event_t event;
+  bno.getEvent(&event);
+  initialYaw = event.orientation.x;
+  lastUpdate = millis();
+
+  Serial.println("Sistema listo con timestep fijo y PID por segmento.");
+}
+
+// =======================================================
+void loop() {
+  unsigned long now = millis();
+
+  if (now - lastUpdate >= DT_MS) {
+    lastUpdate += DT_MS; // timestep fijo
+    currentMillis = now;
+
+    sensors_event_t event;
+    bno.getEvent(&event);
+    currentYaw = event.orientation.x;
+
+    float currentYaw180 = wrap180(currentYaw);
+    float initialYaw180 = wrap180(initialYaw);
+    error = wrap180(currentYaw180 - initialYaw180);
+
+    // zona muerta
+    float eForCtrl = (fabs(error) < DEADBAND) ? 0.0f : error;
+
+    // ========== CONTROL SEGMENTADO ==========
+    float kp, ki, kd;
+    switch (estado1) {
+      case 0: kp = kpc0; ki = kic0; kd = kdc0; break;
+      case 1: kp = kpc1; ki = kic1; kd = kdc1; break;
+      case 2: kp = kpc2; ki = kic2; kd = kdc2; break;
+      case 3: kp = kpc3; ki = kic3; kd = kdc3; break;
+      case 8: kp = kpc8; ki = kic8; kd = kdc8; break;
+      case 9: kp = kpc9; ki = kic9; kd = kdc9; break;
+      case 11: kp = kpc11; ki = kic11; kd = kdc11; break;
+      case 12: kp = kpc12; ki = kic12; kd = kdc12; break;
+      case 13: kp = kpc13; ki = kic13; kd = kdc13; break;
+      default: kp = 10; ki = 0; kd = 5; break;
+    }
+
+    // PID completo
+    integral += eForCtrl * dt;
+    float derivada = (eForCtrl - errorAnterior) / dt;
+    correccion = kp * eForCtrl + ki * integral + kd * derivada;
+
+    // saturación
+    if (correccion > MAX_CORR) correccion = MAX_CORR;
+    if (correccion < -MAX_CORR) correccion = -MAX_CORR;
+    errorAnterior = eForCtrl;
+
+    // ====== APLICACIÓN DEL MOVIMIENTO ======
+    switch (estado1) {
+      case 0: rproporcional(correccion); break;
+      case 1: aproporcional(correccion); break;
+      // podés agregar más movimientos específicos aquí
+      default: pare(); break;
+    }
+
+    // Ejemplo simple de cambio de estado (placeholder)
+    bool switchTrasero = (digitalRead(SWITCH_TRASERO_PIN) == LOW);
+    if (switchTrasero) {
+      estado1++;
+      if (estado1 > 1) estado1 = 0;
+      integral = 0; // reset del integrador al cambiar de estado
+    }
+
+    // Monitor en serie (opcional)
+    Serial.print("Estado: "); Serial.print(estado1);
+    Serial.print(" | Error: "); Serial.print(error);
+    Serial.print(" | Corr: "); Serial.println(correccion);
+  }
+}
