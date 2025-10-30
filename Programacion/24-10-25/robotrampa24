@@ -1,14 +1,11 @@
-//codigo para la competencia de panama
-//robot escalon con deteccion de choque y camara para pelotas moradas
 #include <arduino.h>
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055.h>
 
-#define SWITCH_IZQUIERDO_PIN 24
-#define SWITCH_DERECHO_PIN   19
-#define SWITCH_TRASERO_PIN   23
-
+//#define SWITCH_IZQUIERDO_PIN 29
+#define SWITCH_DERECHO_PIN 24
+#define SWITCH_TRASERO_PIN 23
 // -------------- Motores --------------
 #define INA1 12
 #define INB1 11
@@ -21,7 +18,6 @@
 #define INA3 17
 #define INB3 7
 #define PWM3 4
-
 #define START_BYTE 0xAA
 // -------------------------------------
 
@@ -29,37 +25,44 @@ Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
 //bno.setMode(Adafruit_BNO055::OPERATION_MODE_IMUPLUS);
 
 float correccion = 0;
-float correccion2 = 0;
-float correccion3 = 0;
-float error = 0;
+float error = 0; 
 float initialYaw = 0;   // heading inicial tal como lo da el BNO (0..360)
 float initialPitch = 0;
 float initialRoll = 0;
-int velocidad_adelante = 80; //antes era 70
-int velocidad_atras = 60; // antes era 80
+int velocidad_adelante = 75; //antes era 70
+int velocidad_atras = 70; // antes era 80
 int velocidad_izquierda = 40;
-int velocidad_derecha = 40;//--->22-9-2025 estaba en 40, pero no se movia a la derecha casi.
-float kpadelante = 3.0f; //antes era 10.0f
-float kpdetras = 2.8f;
-float kpadelante2 = 5.0f;
+int velocidad_derecha = 40;
+int velocidad_medio = 69;
+float kp = 2.0f; //antes era 10.0f--<22-9-2025 pasamos a 10, antes era 2
 const float DEADBAND = 1.5f;
 const int   MAX_CORR = 80;
 float currentYaw   = 0;
 float currentPitch = 0;
 float currentRoll = 0;
+float kpatras=4.0;
 unsigned long currentMillis = 0;
 unsigned long previousMillis = 0;
-int estado = 0;
-int estado1 = 0;
+int estado = 0;//camara
+int estado1 = 0;//rutina
+int esquina = 0;//giro de esquina
 
-
-// Variables para cámara - parser no bloqueante kp
+// Variables para cámara - parser no bloqueante
 byte colorDetectado = 0;  // 0=nada, 1=naranja, 2=violeta
 byte posicionX = 0;
 byte posicionY = 0;
 unsigned long ultimaDeteccionCamara = 0;
-const unsigned long TIMEOUT_CAMARA = 500; // ms
+const unsigned long TIMEOUT_CAMARA = 1000; // ms
 
+// Velocidad base lateral para ad
+int velocidad_lateralad = 40;
+int velocidad_lateral_traseraad = 78.70;
+// Velocidad base lateral para ai
+int velocidad_lateralai = 40;
+int velocidad_lateral_traseraai = 78.70;
+// Velocidad base lateral para airam
+int velocidad_lateralairam = 39;
+int velocidad_lateral_traseraairam = 90;
 // Estructura para parser UART no bloqueante
 struct UARTParser {
   enum { WAIT_START, WAIT_LENGTH, WAIT_DATA } estado;
@@ -69,58 +72,6 @@ struct UARTParser {
   unsigned long ultimoByteRecibido;
   const unsigned long TIMEOUT_BYTE = 100; // ms
 } uartParser;
-
-// ---------- choque por acelerómetro (BNO055) ----------
-const float CHOQUE_UMBRAL_MSS = 2.3f;         // m/s^2 (umbral de desaceleración frontal)
-const unsigned long CHOQUE_DEBOUNCE_MS = 60;  // ms de persistencia mínima
-const unsigned long CHOQUE_COOLDOWN_MS = 400; // ms para evitar repeticiones
-const float CHOQUE_LPF_ALPHA = 0.25f;         // filtro paso bajo (0..1)
-const unsigned long CHOQUE_IGNORE_START_MS = 250; // ms ignorados al arrancar avance
-
-// Mapa del eje frontal respecto al frame del sensor (ajustar según montaje)
-const int ACCEL_FORWARD_AXIS = 0;  // 0=X, 1=Y, 2=Z
-const int ACCEL_FORWARD_SIGN = +1; // +1 si el eje del sensor apunta hacia adelante
-
-float choqueAccelLpf = 0.0f;
-unsigned long choqueInicioMs = 0;
-unsigned long choqueUltimoMs = 0;
-unsigned long choqueIgnorarHastaMs = 0;
-
-static inline bool detectarChoque() {
-  imu::Vector<3> lin = bno.getVector(Adafruit_BNO055::VECTOR_LINEARACCEL);
-  float mag = sqrtf(lin.x() * lin.x() + lin.y() * lin.y() + lin.z() * lin.z());
-  // Filtro paso bajo
-  choqueAccelLpf = choqueAccelLpf + CHOQUE_LPF_ALPHA * (mag - choqueAccelLpf);
-
-  unsigned long now = millis();
-  if (now - choqueUltimoMs < CHOQUE_COOLDOWN_MS) {
-    return false;
-  }
-
-  // Ventana de ignorar tras iniciar avance
-  if (now < choqueIgnorarHastaMs) {
-    choqueInicioMs = 0;
-    return false;
-  }
-
-  // Proyección direccional (frontal negativa indica choque)
-  float axisComponent = (ACCEL_FORWARD_AXIS == 0) ? lin.x() : (ACCEL_FORWARD_AXIS == 1 ? lin.y() : lin.z());
-  float forwardAccel = ACCEL_FORWARD_SIGN * axisComponent;
-  bool posibleChoque = (forwardAccel <= -CHOQUE_UMBRAL_MSS);
-
-  if (posibleChoque) {
-    if (choqueInicioMs == 0) choqueInicioMs = now;
-    if (now - choqueInicioMs >= CHOQUE_DEBOUNCE_MS) {
-      choqueUltimoMs = now;
-      choqueInicioMs = 0;
-      Serial.println("Choque detectado por acelerómetro");
-      return true;
-    }
-  } else {
-    choqueInicioMs = 0;
-  }
-  return false;
-}
 
 // ---------- helpers de ángulo ----------
 static inline float wrap180(float a){
@@ -135,6 +86,7 @@ static inline int clampPWM(int v){
   return v;
 }
 
+//
 
 // ---------- movimientos ----------
 void pare() {
@@ -144,8 +96,8 @@ void pare() {
 }
 
 void a() { // avanzar recto “rápido” sin corrección
-  digitalWrite(INA3, LOW); digitalWrite(INB3, HIGH); analogWrite(PWM3, 50);
-  digitalWrite(INA2, HIGH); digitalWrite(INB2, LOW);  analogWrite(PWM2, 50);
+  digitalWrite(INA3, LOW); digitalWrite(INB3, HIGH); analogWrite(PWM3, 80);
+  digitalWrite(INA2, HIGH); digitalWrite(INB2, LOW);  analogWrite(PWM2, 80);
   digitalWrite(INA1, LOW);  digitalWrite(INB1, LOW);  analogWrite(PWM1, 0);
 }
 
@@ -170,74 +122,79 @@ void aproporcional() { // avanza corrigiendo
     digitalWrite(INA1, HIGH); digitalWrite(INB1, LOW); analogWrite(PWM1, clampPWM((int)fabs(correccion)));
   }*/
 }
+void ai() {
+  digitalWrite(INA3, 1);
+  digitalWrite(INB3, 0);
+  analogWrite(PWM3, 40);
 
-void aproporcional2() { // avanza corrigiendo
-  int pwmL = clampPWM(velocidad_adelante - (int)correccion3);
-  int pwmR = clampPWM(velocidad_adelante + (int)correccion3);
+  digitalWrite(INA2, 1);
+  digitalWrite(INB2, 0);
+  analogWrite(PWM2, 40);
 
-  // motor izquierdo (M3) en reversa
-  digitalWrite(INA3, LOW); digitalWrite(INB3, HIGH); analogWrite(PWM3, pwmL);
-  // motor derecho (M2) adelante
-  digitalWrite(INA2, HIGH); digitalWrite(INB2, LOW);  analogWrite(PWM2, pwmR);
-
-  // rueda trasera ayuda según signo
-  //if (fabs(error) <= DEADBAND){
-    digitalWrite(INA1, LOW); digitalWrite(INB1, LOW); analogWrite(PWM1, 0);
-  /*} else if (error > 0){
-    // inclinación positiva → empuja “atrás adelante”
-    digitalWrite(INA1, LOW); 
-    digitalWrite(INB1, HIGH); 
-    analogWrite(PWM1, clampPWM((int)fabs(correccion)));
-  } else { // error < 0
-    digitalWrite(INA1, HIGH); digitalWrite(INB1, LOW); analogWrite(PWM1, clampPWM((int)fabs(correccion)));
-  }*/
+  digitalWrite(INA1, 0);
+  digitalWrite(INB1, 1);
+  analogWrite(PWM1, 85.5);
 }
 
-void ai() { // izquierda
-  digitalWrite(INA3, HIGH); digitalWrite(INB3, LOW);  analogWrite(PWM3, 40);
-  digitalWrite(INA2, HIGH); digitalWrite(INB2, LOW);  analogWrite(PWM2, 40);
-  digitalWrite(INA1, LOW);  digitalWrite(INB1, HIGH); analogWrite(PWM1, 80);
+void ad() {
+  digitalWrite(INA3, 0);
+  digitalWrite(INB3, 1);
+  analogWrite(PWM3, 40);
+
+  digitalWrite(INA2, 0);
+  digitalWrite(INB2, 1);
+  analogWrite(PWM2, 40);
+
+  digitalWrite(INA1, 1);
+  digitalWrite(INB1, 0);
+  analogWrite(PWM1, 70);
+}
+void airam() { // izquierda proporcional con corrección de rumbo
+  int pwmM3 = clampPWM(velocidad_lateralairam - (int)correccion); // M3 adelante
+  int pwmM2 = clampPWM(velocidad_lateralairam + (int)correccion); // M2 adelante
+
+  digitalWrite(INA3, HIGH); digitalWrite(INB3, LOW);  analogWrite(PWM3, pwmM3);
+  digitalWrite(INA2, HIGH); digitalWrite(INB2, LOW);  analogWrite(PWM2, pwmM2);
+
+  // Rueda trasera mantiene lateral fijo
+  digitalWrite(INA1, LOW);  digitalWrite(INB1, HIGH); analogWrite(PWM1, velocidad_lateral_traseraairam);
 }
 
 void aiproporcional() { // izquierda
   int pwmL = clampPWM(velocidad_izquierda + (int)correccion);
   int pwmR = clampPWM(velocidad_izquierda + (int)correccion);
+  int pwmM = clampPWM(velocidad_medio + (int)correccion);
 
   // motor izquierdo (M3) adelante
   digitalWrite(INA3, HIGH); digitalWrite(INB3, LOW);  analogWrite(PWM3, pwmL);
   // motor derecho (M2) atrás
-  digitalWrite(INA2, HIGH);  digitalWrite(INB2, LOW); analogWrite(PWM2, pwmR);
+  digitalWrite(INA2, HIGH); digitalWrite(INB2, LOW); analogWrite(PWM2, pwmR);
 
   // rueda atrás apoya corrección
 
-    digitalWrite(INA1, LOW); digitalWrite(INB1, HIGH); analogWrite(PWM1, 80);
+    digitalWrite(INA1, LOW); digitalWrite(INB1, HIGH); analogWrite(PWM1, pwmM);
 
-}
-
-void ad() { // derecha
-  digitalWrite(INA3, LOW);  digitalWrite(INB3, HIGH); analogWrite(PWM3, 40);
-  digitalWrite(INA2, LOW);  digitalWrite(INB2, HIGH); analogWrite(PWM2, 40);
-  digitalWrite(INA1, HIGH); digitalWrite(INB1, LOW);  analogWrite(PWM1, 80);
 }
 
 void adproporcional(){
   int pwmL = clampPWM(velocidad_derecha - (int)correccion);
   int pwmR = clampPWM(velocidad_derecha - (int)correccion);
+  int pwmM = clampPWM(velocidad_medio - (int)correccion);
 
   // motor izquierdo (M3) adelante
   digitalWrite(INA3, LOW); digitalWrite(INB3, HIGH);  analogWrite(PWM3, pwmL);
   // motor derecho (M2) atrás
-  digitalWrite(INA2, LOW);  digitalWrite(INB2, HIGH); analogWrite(PWM2, pwmR);
+  digitalWrite(INA2, LOW); digitalWrite(INB2, HIGH); analogWrite(PWM2, pwmR);
 
   // rueda atrás apoya corrección
 
-    digitalWrite(INA1, HIGH); digitalWrite(INB1, LOW); analogWrite(PWM1, 80);
+  digitalWrite(INA1, HIGH); digitalWrite(INB1, LOW); analogWrite(PWM1, pwmM);
 
 }
 
-void rproporcional() { // retroceder corrigiendo
-  int pwmL = clampPWM(velocidad_atras + (int)correccion2);
-  int pwmR = clampPWM(velocidad_atras - (int)correccion2);
+void rproporcional(float correcion) { // retroceder corrigiendo
+  int pwmL = clampPWM(velocidad_atras + (int)correccion);
+  int pwmR = clampPWM(velocidad_atras - (int)correccion);
 
   // motor izquierdo (M3) adelante
   digitalWrite(INA3, HIGH); digitalWrite(INB3, LOW);  analogWrite(PWM3, pwmL);
@@ -255,29 +212,45 @@ void rproporcional() { // retroceder corrigiendo
 }
 
 void r() { // retro recto sin corrección (se usa poco)
-  digitalWrite(INA3, HIGH); digitalWrite(INB3, LOW);  analogWrite(PWM3, 70);
-  digitalWrite(INA2, LOW);  digitalWrite(INB2, HIGH); analogWrite(PWM2, 70);
+  digitalWrite(INA3, HIGH); digitalWrite(INB3, LOW);  analogWrite(PWM3, 150);
+  digitalWrite(INA2, LOW);  digitalWrite(INB2, HIGH); analogWrite(PWM2, 150);
   digitalWrite(INA1, LOW);  digitalWrite(INB1, LOW);  analogWrite(PWM1, 0);
 }
 
 void gd (){ // giro derecha
   digitalWrite(INA1, HIGH); digitalWrite(INB1, LOW); analogWrite(PWM1, 45);
-  digitalWrite(INA2, HIGH); digitalWrite(INB2, LOW); analogWrite(PWM2, 45);
-  digitalWrite(INA3, HIGH); digitalWrite(INB3, LOW); analogWrite(PWM3, 45);
+  digitalWrite(INA2, HIGH); digitalWrite(INB2, LOW); analogWrite(PWM2, 0);
+  digitalWrite(INA3, HIGH); digitalWrite(INB3, LOW); analogWrite(PWM3, 0);
 }
 void gi (){ // giro izquierda
   digitalWrite(INA1, LOW);  digitalWrite(INB1, HIGH); analogWrite(PWM1, 45);
-  digitalWrite(INA2, LOW);  digitalWrite(INB2, HIGH); analogWrite(PWM2, 45);
-  digitalWrite(INA3, LOW);  digitalWrite(INB3, HIGH); analogWrite(PWM3, 45);
+  digitalWrite(INA2, LOW);  digitalWrite(INB2, HIGH); analogWrite(PWM2, 0);
+  digitalWrite(INA3, LOW);  digitalWrite(INB3, HIGH); analogWrite(PWM3, 0);
 }
-void e(){
-  pare();
-  //delay(1000);
-  a();
-  delay(300);
-  gi();
-  delay(300);
-}
+
+//
+void ggd (){
+ digitalWrite(INA1, HIGH);
+ digitalWrite(INB1, LOW);
+ analogWrite(PWM1,40);  // Velocidad (0-255) señal pwm
+ digitalWrite(INA2, HIGH);
+ digitalWrite(INB2, LOW);
+ analogWrite(PWM2, 40);
+ digitalWrite(INA3, HIGH);
+ digitalWrite(INB3, LOW);
+ analogWrite(PWM3, 20);  
+ }
+ void ggi (){
+ digitalWrite(INA1, LOW);
+ digitalWrite(INB1, HIGH);
+ analogWrite(PWM1, 40);  // Velocidad (0-255) señal pwm
+ digitalWrite(INA2, LOW);
+ digitalWrite(INB2, HIGH);
+ analogWrite(PWM2, 20);
+ digitalWrite(INA3, LOW);
+ digitalWrite(INB3, HIGH);
+ analogWrite(PWM3, 40);  
+ }
 void procesarMensajeCompleto() {
   // Verificar checksum
   byte checksum = 0;
@@ -362,7 +335,7 @@ void setup() {
   pinMode(INA2, OUTPUT); pinMode(INB2, OUTPUT); pinMode(PWM2, OUTPUT);
   pinMode(INA3, OUTPUT); pinMode(INB3, OUTPUT); pinMode(PWM3, OUTPUT);
 
-  pinMode(SWITCH_IZQUIERDO_PIN, INPUT_PULLUP);
+  //pinMode(SWITCH_IZQUIERDO_PIN, INPUT_PULLUP);
   pinMode(SWITCH_DERECHO_PIN,   INPUT_PULLUP);
   pinMode(SWITCH_TRASERO_PIN,   INPUT_PULLUP);
 
@@ -399,6 +372,10 @@ void setup() {
 }
 
 void loop() {
+   procesarUARTNoBloqueante();
+   if(millis()- ultimaDeteccionCamara > TIMEOUT_CAMARA){
+    colorDetectado = 0;
+   }
   sensors_event_t event;
   bno.getEvent(&event);
 
@@ -413,156 +390,229 @@ void loop() {
 
   // zona muerta y saturación de corrección
   float eForCtrl = (fabs(error) < DEADBAND) ? 0.0f : error;
-  correccion = eForCtrl * kpadelante;
+  correccion = eForCtrl * kp;
   if (correccion >  MAX_CORR) correccion =  MAX_CORR;
   if (correccion < -MAX_CORR) correccion = -MAX_CORR;
-
-  float eForCtrl2 = (fabs(error) < DEADBAND) ? 0.0f : error;
-  correccion2 = eForCtrl2 * kpdetras;
-  if (correccion2 >  MAX_CORR) correccion2 =  MAX_CORR;
-  if (correccion2 < -MAX_CORR) correccion2 = -MAX_CORR;
-
-  float eForCtrl3 = (fabs(error) < DEADBAND) ? 0.0f : error;
-  correccion3 = eForCtrl3 * kpadelante2;
-  if (correccion3 >  MAX_CORR) correccion3 =  MAX_CORR;
-  if (correccion3 < -MAX_CORR) correccion3 = -MAX_CORR;
 
  currentMillis = millis();
 
   bool switchDerechoActivado  = (digitalRead(SWITCH_DERECHO_PIN)  == LOW); // LOW = presionado
-  bool switchTraseroActivado  = (digitalRead(SWITCH_TRASERO_PIN)  == HIGH); //para robot blanco HIGH
-  bool switchIzquierdoActivado = (digitalRead(SWITCH_IZQUIERDO_PIN)== LOW);
+  bool switchTraseroActivado  = (digitalRead(SWITCH_TRASERO_PIN)  == LOW); //para robot blanco HIGH
+  //bool switchIzquierdoActivado = (digitalRead(SWITCH_IZQUIERDO_PIN)== LOW);
 
   switch (estado1) {
-    case 0: // izquierda hasta tocar switch izquierdo
-      aiproporcional();
-      if (switchIzquierdoActivado || (currentMillis - previousMillis) >= 1500) {
+    case 0:
+      //if (!enMovimiento) {  
+        adproporcional();
+       // enMovimiento = true;
+       previousMillis = currentMillis;
+      //}
+      if(switchDerechoActivado || (currentMillis - previousMillis) >= 1500) {
         pare();
+        //enMovimiento = false;
         estado1 = 1;
-        choqueIgnorarHastaMs = millis() + CHOQUE_IGNORE_START_MS;
+        //estado1 = 1;
         previousMillis = currentMillis;
       }
       break;
 
-    case 1: // avanza por tiempo con corrección + freno por choque
-      aproporcional();
-
-      if (verificarPelotaVioleta()) {
-        e();
-        pare();
-        if(currentMillis - previousMillis >= 1000){
-          previousMillis = currentMillis;
-          estado1 = 2;
+    case 1:
+      /*if (error < -180) {
+       error = error + 360;
       }
+      if (error > 7) {
+       gi();
+      }
+      else if (error < -7) {
+       gd();
+      }
+      else {*/ 
+    /*if (error < -180) {
+       error = error + 360;
+      }
+     if (error > 7) {
+      gi();
     }
-      else{
-      if (detectarChoque()) {
-        pare();
-        previousMillis = currentMillis;
-        estado1 = 2;
-      }
-      else if (currentMillis - previousMillis >= 1500) { //depende la bateria va a cambiar la velocidad y el tiempo
-        previousMillis = currentMillis;
-        estado1 = 2;
-      }
+    else if (error < -7) {
+      gd();
     }
-      break;
-
-    case 2: // derecha por tiempo
-      adproporcional();
-      if (currentMillis - previousMillis >= 800) {
-        pare();
-        estado1 = 3;
-        previousMillis = currentMillis;
+    else {*/
+     aproporcional();
+    if (verificarPelotaVioleta()){
+        ggi();
+        if ((currentMillis - previousMillis) >= 450)
+        ggd();
+        
       }
-      break;
-
-    case 3: // retrocede hasta tocar switch trasero, corrigiendo
-
-      if(error < -15){
-           digitalWrite(INA3, LOW); digitalWrite(INB3, HIGH);  analogWrite(PWM3, 70);
-           digitalWrite(INA2, LOW);  digitalWrite(INB2, HIGH); analogWrite(PWM2, 0);
-           digitalWrite(INA1, LOW); digitalWrite(INB1, HIGH); analogWrite(PWM1, 70);
-      }
-
-      else{
-        rproporcional();
-      }
-
-      if (switchTraseroActivado || (currentMillis - previousMillis) >= 3000) {           // <-- antes comparabas == 0
-        pare();                               // paro para evitar “curva” al salir
-        previousMillis = currentMillis;
-        estado1 = 8;
-      }
-      break;
-
-    case 8: // izquierda por tiempo (corto)
-      aiproporcional();
-
-      if (currentMillis - previousMillis >= 250) {
-        estado1 = 9;
-        choqueIgnorarHastaMs = millis() + CHOQUE_IGNORE_START_MS;
-        previousMillis = currentMillis;
-      }
-      break;
-
-    case 9: // avanza por el medio + freno por choque
-      aproporcional2();
-      if (verificarPelotaVioleta()) {
-        e();
-      if(currentMillis - previousMillis >= 2000){
-        previousMillis = currentMillis;
-        estado1 = 11;
-      }    
-      }
-      else{
-      if (detectarChoque()) {
-        pare();
-        previousMillis = currentMillis;
-        estado1 = 11;
-      }  
-      else if (currentMillis - previousMillis >= 1500) {
-        previousMillis = currentMillis;
-        estado1 = 11;
-      }
-      }
-      break;
-
-    case 11: // derecha por tiempo
-      adproporcional();
-      if (currentMillis - previousMillis >= 600) {
-        pare();
-        estado1 = 12;
-        previousMillis = currentMillis;
-      }
-      break;
-
-    case 12: // retrocede hasta switch trasero
+     if (currentRoll > 3.5 || currentMillis - previousMillis >= 2000 ){
+      pare();
+      estado1 = 2;
+      previousMillis = currentMillis;
+     }
     
-       if(error < -15){
-          digitalWrite(INA3, LOW); digitalWrite(INB3, HIGH);  analogWrite(PWM3, 70);
-          digitalWrite(INA2, LOW);  digitalWrite(INB2, HIGH); analogWrite(PWM2, 0);
-          digitalWrite(INA1, LOW); digitalWrite(INB1, HIGH); analogWrite(PWM1, 70);
-      }
+       break;  // <-- ¡Importante!
+    
+    case 2:
+    //aiproporcional();
+    aiproporcional();  // ejecutar movimiento constantemente
+    if (currentMillis - previousMillis >= 700) { 
+        pare();             
+        estado1 = 3;
+        //estado1 = 3;        
+        previousMillis = currentMillis;
+    }
       
-      else{
-        rproporcional();
+    break;
+
+    case 3:
+    error = wrap180(currentYaw180 - initialYaw180-5);
+
+  // zona muerta y saturación de corrección
+   //eForCtrl = (fabs(error) < DEADBAND) ? 0.0f : error;
+  correccion = eForCtrl * kpatras;
+  if (correccion >  MAX_CORR) correccion =  MAX_CORR;
+  if (correccion < -MAX_CORR) correccion = -MAX_CORR;
+    if(error > 15){
+           digitalWrite(INA3, LOW); digitalWrite(INB3, HIGH);  analogWrite(PWM3, 0);
+           digitalWrite(INA2, HIGH);  digitalWrite(INB2, LOW); analogWrite(PWM2, 80);
+           digitalWrite(INA1, HIGH); digitalWrite(INB1, LOW); analogWrite(PWM1, 80);
       }
 
-      if (switchTraseroActivado || (currentMillis - previousMillis) >= 3000) {
+      else{
+        rproporcional(correccion);
+      }           
+      if (switchTraseroActivado || (currentMillis - previousMillis) >= 2000) {
         pare();
-        previousMillis = currentMillis;
+         estado1 = 8; 
+         previousMillis = currentMillis;
+       }
+      break; 
+    case 8:
+      adproporcional();
+      if(switchDerechoActivado || (currentMillis - previousMillis) >= 250){
+        pare();
+      estado1 = 9;
+      previousMillis = currentMillis; 
+      }
+      break;
+    case 9:
+    /*if (error < -180) {
+       error = error + 360;
+      }
+     if (error > 7) {
+      gi();
+    }
+    else if (error < -7) {
+      gd();
+    }
+    else {*/
+     aproporcional();
+    if (verificarPelotaVioleta()){
+        ggi();
+        if ((currentMillis - previousMillis) >= 450)
+        ggd();
         estado1 = 0;
       }
+     else if (currentRoll > 5){
+      pare();
+      estado1 = 11;
+      previousMillis = currentMillis;
+     }
+    
+       break;
+    case 11:
+    aiproporcional();
+    if(currentMillis - previousMillis >= 400){
+      pare();
+      estado1 = 12;
+      previousMillis = currentMillis; 
+      }
       break;
-
-    case 13:
-      // (tu rutina de esquina acá si la necesitás)
-      break;
+    case 12:
+    correccion = eForCtrl * kpatras;
+  if (correccion >  MAX_CORR) correccion =  MAX_CORR;
+  if (correccion < -MAX_CORR) correccion = -MAX_CORR;
+     if(error > 14.6){
+           digitalWrite(INA3, LOW); digitalWrite(INB3, HIGH);  analogWrite(PWM3, 0);
+           digitalWrite(INA2, HIGH);  digitalWrite(INB2, LOW); analogWrite(PWM2, 80);
+           digitalWrite(INA1, HIGH); digitalWrite(INB1, LOW); analogWrite(PWM1, 80);
+      }
+      else{
+    rproporcional(correccion);
   }
+    if (switchTraseroActivado || (currentMillis - previousMillis) >= 3500) {
+        pare();
+        estado1 = 13;
+         previousMillis = currentMillis;
+        }
+        break;
+    case 13:
+    switch (esquina){
+    case 0: 
+    adproporcional();
+    if(switchDerechoActivado || (currentMillis - previousMillis) >= 2400){
+      pare();
+        esquina = 1;
+        previousMillis = currentMillis;
+        }
+        break;
+    case 1 :
+    aiproporcional();
+    if(currentMillis - previousMillis >= 150){
+    pare();
+    esquina = 2;
+    previousMillis = currentMillis; }
+    break;
+
+    case 2:
+    ggi();
+    if(currentMillis - previousMillis >= 150){
+    pare();
+    esquina = 3;
+    previousMillis = currentMillis; }
+    break;
+    case 3:
+    ggd();
+    if(currentMillis - previousMillis >= 150){
+    pare();
+    esquina = 4;
+    previousMillis = currentMillis; }
+    break;
+    case 4:
+    adproporcional();
+    if(switchDerechoActivado || (currentMillis - previousMillis) >= 250){
+      esquina = 5;}
+      break;
+    case 5:
+     /*if (error < -180) {
+       error = error + 360;
+      }
+     if (error > 50) {
+      gi();
+    }
+    else if (error < -50) {
+      gd();
+    }
+    else {*/
+    rproporcional(correccion);
+    if (switchTraseroActivado || (currentMillis - previousMillis) >= 3500) {
+        pare();
+        estado1 = 1;
+        esquina = 0;
+        previousMillis = currentMillis;
+        }
+      else if (currentMillis - previousMillis >= 150){
+        pare();
+        estado1 = 1;
+        esquina = 0;
+        previousMillis = currentMillis;
+      }
+      
+    break;
+
   
   // Procesar UART de forma no bloqueante (solo 2 bytes por iteración)
-  procesarUARTNoBloqueante();
+ 
   
   // Ejemplo de uso de la cámara (descomenta según necesites):
   /*
@@ -575,7 +625,7 @@ void loop() {
   if (verificarPelotaVioleta()) {
     Serial.println("¡Pelota VIOLETA detectada!");
     // Tu lógica aquí - por ejemplo:
-    // pare(); // Parar para evitar pasar la pelota*/
-  
-  
-}
+    // pare(); // Parar para evitar pasar la pelota
+  }
+  */
+}}}
