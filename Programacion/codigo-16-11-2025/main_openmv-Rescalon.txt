@@ -1,0 +1,44 @@
+import sensor, time
+from pyb import UART
+from machine import LED
+sensor.reset()
+sensor.set_pixformat(sensor.RGB565)
+sensor.set_framesize(sensor.QVGA)
+sensor.skip_frames(time = 2000)
+ganancia = sensor.get_gain_db()
+gananciargb = sensor.get_rgb_gain_db()
+exposicion = sensor.get_exposure_us()
+led = LED("LED_BLUE")
+sensor.set_auto_gain(False,gain_db=ganancia)
+sensor.set_auto_whitebal(False,rgb_gain_db=gananciargb)
+sensor.set_auto_exposure(False,exposure_us=(exposicion+ 5000))
+uart = UART(3, 19200)
+uart.init(19200, bits=8, parity=None, stop=1)
+yellow_threshold = (49, 90, -10, 20, 20, 60)
+violet_threshold = (10, 40, 1, 15, -12, 7)
+clock = time.clock()
+def enviar_paquete(codigo, x, y):
+    START_BYTE = 0xAA
+    data = [codigo, x, y]
+    length = len(data)
+    checksum = sum(data) % 256
+    paquete = bytearray([START_BYTE, length] + data + [checksum])
+    return paquete
+while True:
+    clock.tick()
+    img = sensor.snapshot()
+    violet_blobs = img.find_blobs([violet_threshold], pixels_threshold=400,
+                                  area_threshold=400, merge=True)
+    if violet_blobs:
+        for blob in violet_blobs:
+            img.draw_rectangle(blob.rect(), color=(255, 0, 255))
+            img.draw_cross(blob.cx(), blob.cy(), color=(255, 0, 255))
+            led.on()
+            paquetea = enviar_paquete(2, 0, 0)
+            uart.write(paquetea)
+            print("Violeta:", paquetea)
+    else:
+        led.off()
+        paquetea = enviar_paquete(0, 0, 0)
+        print("Nada:", paquetea)
+    time.sleep_ms(10)
