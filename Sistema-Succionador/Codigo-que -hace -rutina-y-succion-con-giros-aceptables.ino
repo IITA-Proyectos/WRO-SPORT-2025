@@ -1,4 +1,4 @@
-#include <arduino.h>
+#include <arduino.h>//probar con<Arduino.h>
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BNO055.h>
